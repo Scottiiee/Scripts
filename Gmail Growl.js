@@ -1,93 +1,172 @@
 // ==UserScript==
-// @name        Gmail Growl
-// @namespace   http://nleach.com
-// @description Gmail Growl Notification for Fluid.
-// @include     https://mail.google.com/*
+// @name           Gmail Chat Notifier
+// @description    Provides notification of incoming Gmail chat messages
+// @include        https://mail.google.com/*
 // ==/UserScript==
 
-(function () {
-	if (!window.fluid) { return; }
-	
-	// Insert jQuery into the page
-	var q=document.createElement('script'); q.setAttribute('src','https://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js'); document.body.appendChild(q);
+// NOTE: This script relies on the Gmail DOM structure as of 2010-09-23
+// I don't think Gmail has an API for accessing its chat messages, so
+// if they decide to change their DOM structure then this script can break.
 
-	// Global vars
-	var unreadMsgCount = -1;	// Counter for unread messages
-	var $mail = new Array();	// jQuery DOM object for the Gmail iframe's contents
-								// Initialize as an Array so we can check its length
-	
-	// Script options
-	var initialDelay = 8;		// seconds to wait for the first check
-	var pollInterval = 30;		// seconds to wait between checks
-	var priority = 1;			// Growl preference
-	var sticky = false;			// Growl preference
-	var trimLength = 150;		// Max number of characters to show for sender, subject and message body
-	
-	// Gmail selectors (change somewhat frequently)
-	var inboxSelector = 'a.n0[title^=Inbox]';
-	var unreadMessageSelector = 'tr.zA.zE';
-	var senderSelector = 'span.zF';
-	var subjectSelector = '.y6 span:first';
-	var bodySelector = '.y2';
+var unread_count = 0;		// keep track of how many total unread e-mails we have
+var label = '';
+var badge_status = '';		// what type of info the dock badge is current displaying
+							// ('' for nothing, 'unread' for unread count, 'chat' for chat name)
 
-	function growlNewMessages() {
+// Called by event listener for 'DOMNodeInserted'
+// Checks the inserted node to see if it's chat-related
+// Calls growlChatMessage for chat-related node-insertions
+function onNodeInserted(event) {
+	// If we have a new incoming message cluster
+	// (i.e., one that would have the 'Alan:' prefix)
+	if (event.target.getAttribute('role') == 'chatMessage' &&
+		event.target.getAttribute('chat-dir') == 't') {
 
-		var oldCount = unreadMsgCount;
+		// Growl using text in the last child node (it's really the only node)
+		growlChatMessage(event.target.lastChild);
+		
+	// If we have a new incoming message within an existing cluster
+	// (i.e., just the message, 'Alan:' already showed up previously)
+	} else if (event.target.parentNode.getAttribute('role') == 'chatMessage' &&
+			   event.target.parentNode.getAttribute('chat-dir') == 't') {
+		
+		// Growl using text in the current node (message node)
+		growlChatMessage(event.target);
 
-		// Make sure jQuery has been loaded (if it hasn't yet, it might be on the next pass)
-		if (jQuery){
-			if(!$mail.length){ $mail = jQuery('#canvas_frame').contents(); }
-			
-			// Extract the number of unread messages
-			matches = $mail.find(inboxSelector).text().match(/\((\d*)\)/);
-		}
+	// If a new chat window is created by this incoming message
+	} else if (event.target.getAttribute('role') == 'log' &&
+			   event.target.firstChild.lastChild.getAttribute('chat-dir') == 't') {
+
+		// Growl using text in the latest message node
+		growlChatMessage(event.target.firstChild.lastChild.lastChild);
+	}
+}
+
+// Generates a Growl notification about a chat message
+// Takes a message DOM node as its input
+function growlChatMessage(node) {
+	var title_txt = '';
+	var msg_txt = '';
 	
-		if (matches) {
-			unreadMsgCount = matches[1];
-		} else {
-			unreadMsgCount = 0;
-		}
-
-		// If the unread message count is greater than it was the last
-		// time we checked, we know that we've received one or more new
-		// messages.
-		if(oldCount == -1){
-			fluid.showGrowlNotification({
-				title: 'New Mail!',
-				description: unreadMsgCount + ' total unread',
-				priority: priority,
-				sticky: sticky
-			});
-		} else if (unreadMsgCount > oldCount) {
-			// Counter for the number of new message growls displayed
-			var currentMsg = 0;
-			
-			// Helper function to set all the text lengths to something reasonable for a growl notification
-			var prepText = function($field){
-				return $field.text().substring(0, trimLength);
-			};
+	// Class 'kk' is for the first message in a cluster
+	// (i.e., it has 'Alan:' prefixed to it), which has a different DOM structure.
+	// Any other node is a normal message node
+	if (node.getAttribute('class') == 'kk') {
+		title_txt = node.childNodes[1].firstChild.nodeValue;	// User name
+		msg_node = node.childNodes[3];		// Node containing message text
+	} else {
+		title_txt = node.parentNode.firstChild.childNodes[1].firstChild.nodeValue; // User name
+		msg_node = node;					// Node containing message text
+	};
 	
-			// Iterate over the unread messages and display a growl notification for the NEW unread messages
-			$mail.find(unreadMessageSelector).each(function(){
-				if(++currentMsg > (unreadMsgCount - oldCount)){ return false; } // We're only going to show you the NEW unread messages
-				
-				fluid.showGrowlNotification({
-					title: 'New Mail From ' + prepText($(this).find(senderSelector)),
-					description: prepText($(this).find(subjectSelector)) + prepText($(this).find(bodySelector)),
-					priority: priority,
-					sticky: sticky
-				});
-			});
+	// Get the text of the message in the message text node
+	// Strip HTML tags from message text
+	msg_txt = msg_node.innerHTML.replace(/(<([^>]+)>)/ig,'');
+
+	title_txt = title_txt.substring(0,title_txt.length-2) + ' says...';
+	
+	// Growl the message
+	window.fluid.showGrowlNotification({
+		title: title_txt,
+		description: msg_txt
+	});
+}
+
+// Sets up an event listener on the node for the Inbox link in the navigation panel
+// Also sets the initial unread count (upon loading)
+function setInboxListener() {
+	// 'canvas_frame' is the id of the main HTML component of Gmail
+	var canvas_frame = document.getElementById('canvas_frame').contentDocument;
+	// Get all link nodes; search for the one with title = 'Inbox' or 'Inbox (1)' or 'Inbox (2)', etc.
+	var a_elems = canvas_frame.links;
+	for (i=0; i<a_elems.length; i++) {
+		var a_title = a_elems[i].getAttribute('title');
+		if (a_title && a_title.substr(0,5) == 'Inbox') {
+			label = a_elems[i].innerHTML;
+			// Notify of any unread mail
+			notifyUnread();
+			// Add a node insertion event listener to the Inbox node 
+			a_elems[i].addEventListener('DOMNodeInserted', onInboxNodeInserted, false);
+			return;
 		}
 	}
+	// Try this again in 1000 ms if we didn't find the Inbox node
+	window.setTimeout(function() {setInboxListener();}, 1000);
+}
 
-	
-	// Check for new messages every pollInterval seconds
+// Called by node insertion event listener on the Inbox node
+// Extracts the text of the node and passes it to notifyUnread
+function onInboxNodeInserted(event) {
+	if (event.target.nodeType == 3) {
+		label = event.target.data;
+		if (label.substr(0,5) == 'Inbox') {
+		 	notifyUnread(label);
+		}
+	}
+}
 
-	// Run the 1st check, likely sooner than the pollInterval
-	setTimeout(function(){ growlNewMessages(); }, initialDelay * 1000);
+// Takes in label (e.g., 'Inbox (3)') and does two things:
+// - Sets the unread_count
+// - Growls new mail notification if we have a positive change
+function notifyUnread() {
+	if (label == 'Inbox') {
+		unread_count = 0;
+	} else {
+		var search_results = label.match(/\((\d*)\)/);
+		if (search_results) {
+			var new_unread_count = search_results[1];
+			// Removed because it is in Gmail Growl
+			//if (new_unread_count > unread_count) {
+			//	window.fluid.showGrowlNotification({
+			//		title: "New mail!",
+			//		description: new_unread_count + " total unread",
+			//		id: 'new_mail'
+			//	});
+			//}
+			unread_count = new_unread_count;
+		}
+	}
+	setUnreadBadge();
+}
 
-	// Keep checking at a longer interval
-	setInterval(function(){ growlNewMessages(); }, pollInterval * 1000);
-	
-})();
+// Set the dock badge unread count based on unread_count
+// Leave it untouched if the current dock badge status is 'chat'
+function setUnreadBadge() {
+	if (badge_status != 'chat') {
+		if (unread_count > 0) {
+			window.fluid.dockBadge = unread_count;
+			badge_status = 'unread';
+		} else {
+			window.fluid.dockBadge = '';
+			badge_status = 'none';
+		}	
+	}
+}
+
+// Called by the event listener on the page title node
+// Used to blink the badge between an incoming chatter's name and the unread count
+function onTitleModified(event) {
+	var new_title = event.newValue;
+	var search_results = new_title.match(/(.*)[ ]says.*/);
+	if (search_results) {
+		window.fluid.dockBadge = search_results[1];
+		badge_status = 'chat';
+	} else {
+		badge_status = '';
+		setUnreadBadge();
+	}
+}
+
+// Listen for DOM node insertions and call onNodeInserted if there are any
+document.addEventListener('DOMNodeInserted', onNodeInserted, false);
+
+var results = document.getElementsByTagName('title');
+var title_node = results[0];
+// Listen for text modification of the page title
+title_node.addEventListener('DOMCharacterDataModified', onTitleModified, false);
+
+// Listen for insertions into the navigation bar's Inbox link node
+setInboxListener();
+
+// Forcibly set the badge occasionally in case something got it off track
+window.setInterval(function() {notifyUnread();}, 2000);
