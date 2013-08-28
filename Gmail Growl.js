@@ -9,7 +9,7 @@
 	if (!window.fluid) { return; }
 	
 	// Insert jQuery into the page
-	var q=document.createElement('script'); q.setAttribute('src','http://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js'); document.body.appendChild(q);
+	var q=document.createElement('script'); q.setAttribute('src','https://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js'); document.body.appendChild(q);
 
 	// Global vars
 	var unreadMsgCount = -1;	// Counter for unread messages
